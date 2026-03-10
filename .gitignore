@@ -1,0 +1,9 @@
+.idea/
+*.iml
+.DS_Store
+
+flutter_ai_psychologist/.dart_tool/
+flutter_ai_psychologist/build/
+
+crow_server/build/
+crow_server/out/

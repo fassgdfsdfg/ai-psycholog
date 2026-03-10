@@ -1,0 +1,19 @@
+name: ai_psychologist
+description: Учебный проект «AI Психолог».
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  shared_preferences: ^2.3.3
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
