@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-const String serverBaseUrl = 'http://62.60.186.99:8080';
+const String serverBaseUrl = 'http://213.21.251.49:8080';
 
 const String _prefsKey = 'chat_history_lines';
 
