@@ -1,0 +1,32 @@
+name: Build Flutter APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Скачиваем код
+        uses: actions/checkout@v4
+      
+      - name: Устанавливаем Flutter в облаке
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          
+      - name: Скачиваем зависимости
+        working-directory: ./flutter_ai_psychologist
+        run: flutter pub get
+        
+      - name: Компилируем релизный APK
+        working-directory: ./flutter_ai_psychologist
+        run: flutter build apk --release
+        
+      - name: Сохраняем готовый файл
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI_Psychologist_APK
+          path: flutter_ai_psychologist/build/app/outputs/flutter-apk/app-release.apk
