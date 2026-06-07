@@ -6,20 +6,22 @@
 
 #include "crow_all.h"
 
-// Добавляет полученные от libcurl байты в строку-буфер; возвращает размер записанных байт (требование API curl).
+// Для curl, чтобы он собирал ответ от Google в одну строку, требование гугла
 static size_t writeCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* out = static_cast<std::string*>(userdata);
     out->append(ptr, size * nmemb);
     return size * nmemb;
 }
 
-// Отправляет текст пользователя в Gemini и возвращает текст ответа ассистента; при сбое возвращает пустую строку.
+// Основная функция для работы с нейросетью. Тут формируем запрос, настраиваем прокси и парсим ответ.
 std::string callGemini(const std::string& apiKey, const std::string& userText) {
+    // Промпт для психолога. Важно, чтобы отвечал кратко, из за лимитов.
     const std::string systemPrompt =
-        "Ты — психолог в методе КПТ. Валидируй чувства, задавай наводящие вопросы, помогай найти ошибки мышления. Отвечай кратко (2-3 предложения) на русском.";
+            "Ты — психолог в методе КПТ. Валидируй чувства, задавай наводящие вопросы, помогай найти ошибки мышления. Отвечай кратко (2-3 предложения) на русском.";
 
     const std::string promptText = systemPrompt + "\n" + userText;
 
+    // Собираем структуру запроса по докам Google Gemini
     nlohmann::json part;
     part["text"] = promptText;
     nlohmann::json content;
@@ -28,14 +30,14 @@ std::string callGemini(const std::string& apiKey, const std::string& userText) {
     requestBody["contents"] = nlohmann::json::array({content});
 
     const std::string jsonBody = requestBody.dump();
-    
-    // Подключаем версию 3.1-flash
+
+    // Используем версию 3.1-flash-lite
     const std::string url =
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=" + apiKey;
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=" + apiKey;
 
     CURL* curl = curl_easy_init();
     if (!curl) {
-        std::cerr << "[Gemini CURL Error] curl_easy_init failed" << std::endl;
+        std::cerr << "[Ошибка] Curl не захотел инициализироваться" << std::endl;
         return "";
     }
 
@@ -43,112 +45,99 @@ std::string callGemini(const std::string& apiKey, const std::string& userText) {
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
+    // Настраиваем curl: передаем заголовки, тело запроса и коллбэк для записи ответа
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonBody.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
 
-    // Прокси через кф для обхода санкций
+    // Настройка прокси через WARP (порт 40000), обход санкций
     curl_easy_setopt(curl, CURLOPT_PROXY, "socks5h://127.0.0.1:40000");
-    // Таймаут 60 секунд
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
-    // Таймаут на ПОДКЛЮЧЕНИЕ (15 сек)
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L); // Ждем максимум минуту
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
-    // Логи
-    curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 
+    // Выполняем запрос
     const CURLcode code = curl_easy_perform(curl);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
     if (code != CURLE_OK) {
-        std::cerr << "[Gemini CURL Error] " << curl_easy_strerror(code) << std::endl;
+        std::cerr << "[Ошибка CURL] Что-то с сетью: " << curl_easy_strerror(code) << std::endl;
         return "";
     }
 
-    std::cerr << "--- Gemini Response Raw: " << responseBody << std::endl;
+    // Теперь надо вытащить из JSON ответа только сам текст ответа
     try {
         const nlohmann::json j = nlohmann::json::parse(responseBody);
+
+        // Проверяем, на ошибки от Google API
         if (j.contains("error")) {
-            std::cerr << "[Gemini JSON Error] " << j["error"] << std::endl;
+            std::cerr << "[Ошибка API] Гугл ругается: " << j["error"].dump() << std::endl;
             return "";
         }
-        if (!j.contains("candidates") || j["candidates"].empty()) {
-            std::cerr << "[Gemini JSON Error] empty candidates" << std::endl;
-            return "";
-        }
+
+        // Идем в объект за текстом: candidates -> content -> parts -> text
         const auto& cand = j["candidates"][0];
-        if (!cand.contains("content") || !cand["content"].contains("parts") || cand["content"]["parts"].empty()) {
-            std::cerr << "[Gemini JSON Error] no text in response" << std::endl;
-            return "";
-        }
         const std::string text = cand["content"]["parts"][0].value("text", "");
-        if (text.empty()) {
-            std::cerr << "[Gemini JSON Error] empty parts[0].text" << std::endl;
-        }
+
         return text;
     } catch (const std::exception& e) {
-        std::cerr << "[Gemini JSON Parse Error] " << e.what() << std::endl;
+        std::cerr << "[Ошибка парсинга] Пришел кривой JSON: " << e.what() << std::endl;
         return "";
     }
 }
 
 int main() {
+    // Глобальные настройки curl
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
     crow::SimpleApp app;
 
+    // Сюда фронт отправляет сообщения
     CROW_ROUTE(app, "/chat")
-        .methods(crow::HTTPMethod::Post)([](const crow::request& req) {
-            crow::response res;
-            res.add_header("Access-Control-Allow-Origin", "*");
-            res.add_header("Content-Type", "application/json; charset=utf-8");
+            .methods(crow::HTTPMethod::Post)([](const crow::request& req) {
+                crow::response res;
+                // Разрешаем запросы откуда угодно (через CORS)
+                res.add_header("Access-Control-Allow-Origin", "*");
+                res.add_header("Content-Type", "application/json; charset=utf-8");
 
-            const char* key = std::getenv("GEMINI_API_KEY");
-            if (key == nullptr || std::strlen(key) == 0) {
-                res.code = 500;
-                res.body = R"({"error":"set GEMINI_API_KEY environment variable"})";
+                // Берем ключ из переменной окружения
+                const char* key = std::getenv("GEMINI_API_KEY");
+                if (key == nullptr || std::strlen(key) == 0) {
+                    res.code = 500;
+                    res.body = R"({"error":"Забыл прописать GEMINI_API_KEY на сервере!"})";
+                    return res;
+                }
+
+                // Достаем сообщение от пользователя
+                const nlohmann::json in = nlohmann::json::parse(req.body, nullptr, false);
+                if (in.is_discarded() || !in.contains("message")) {
+                    res.code = 400;
+                    res.body = R"({"error":"Жду JSON типа {"message": "..."}"})";
+                    return res;
+                }
+
+                const std::string userMsg = in["message"].get<std::string>();
+
+                // Получаем ответ
+                std::string replyText = callGemini(key, userMsg);
+
+                if (replyText.empty()) {
+                    res.code = 500;
+                    res.body = R"({"error":"Нейронка не ответила, надо проверять логи сервера"})";
+                    return res;
+                }
+
+                // Упрощаем ответ для фронтенда: отправляем просто один ключ "reply"
+                nlohmann::json out;
+                out["reply"] = replyText;
+
+                res.body = out.dump(); // Превращаем объект в строку и отправляем
                 return res;
-            }
+            });
 
-            const nlohmann::json in = nlohmann::json::parse(req.body, nullptr, false);
-            if (!in.is_object() || !in.contains("message") || !in["message"].is_string()) {
-                res.code = 400;
-                res.body = R"({"error":"JSON body must be {\"message\":\"...\"}"})";
-                return res;
-            }
-
-            const std::string userMsg = in["message"].get<std::string>();
-            if (userMsg.empty()) {
-                res.code = 400;
-                res.body = R"({"error":"message is empty"})";
-                return res;
-            }
-
-            std::string replyText;
-
-            replyText = callGemini(key, userMsg);
-            if (replyText.empty()) {
-                res.code = 500;
-                res.body = R"({"error":"Gemini request failed"})";
-                std::cerr << "[Gemini Failed] replyText is empty -> HTTP 500" << std::endl;
-                return res;
-            }
-
-            // Собираем JSON ответ
-            crow::json::wvalue out;
-            
-            // Crow позволяет создавать вложенность прямо через оператор []
-            // Это самый безопасный способ, который не вызывает ошибок копирования
-            out["candidates"][0]["content"]["parts"][0]["text"] = replyText;
-
-            // Вместо crow::json::dump(out) используем метод .dump() самого объекта
-            res.body = out.dump(); 
-            return res;
-        });
-
+    // Обработка префлайт-запросов
     CROW_ROUTE(app, "/chat").methods(crow::HTTPMethod::Options)([] {
         crow::response res;
         res.code = 204;
@@ -158,6 +147,8 @@ int main() {
         return res;
     });
 
+    // Запускаем сервер на 8080 порту
+    std::cout << "Сервер запущен. Порт 8080." << std::endl;
     app.port(8080).multithreaded().run();
 
     curl_global_cleanup();
